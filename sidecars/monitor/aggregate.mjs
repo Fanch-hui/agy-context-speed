@@ -13,8 +13,11 @@ import { DEFAULT_WINDOWS, sanitizeWindows } from './settings.mjs';
 const DAY_MS = 86_400_000;
 const sessionCache = new Map();
 
-function safeMtime(file) {
-  try { return statSync(file).mtimeMs; } catch { return 0; }
+function safeStatStamp(file) {
+  try {
+    const st = statSync(file);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch { return '0:0'; }
 }
 
 function parseHHMM(raw) {
@@ -125,7 +128,7 @@ export function resolvePoolWindow(poolCfg = {}, sortedCallTimes = [], nowMs = Da
 
 function getSessionPricedTurns(session) {
   const dbPath = join(session.rootDir, 'conversations', `${session.uuid}.db`);
-  const stamp = `${session.file}:${session.size}:${session.modified}:${safeMtime(dbPath)}:${safeMtime(`${dbPath}-wal`)}`;
+  const stamp = `${session.file}:${session.size}:${session.modified}:${safeStatStamp(dbPath)}:${safeStatStamp(`${dbPath}-wal`)}`;
   const hit = sessionCache.get(session.id);
   if (hit?.stamp === stamp) return hit.turns;
   const steps = readJsonlTail(session.file);

@@ -323,7 +323,8 @@ const subCache = new Map();
 
 function dbStamp(rootDir, uuid) {
   const dbPath = join(rootDir, 'conversations', `${uuid}.db`);
-  return `${safeStat(dbPath)?.mtimeMs || 0}:${safeStat(`${dbPath}-wal`)?.mtimeMs || 0}`;
+  const a = safeStat(dbPath), b = safeStat(`${dbPath}-wal`);
+  return `${a?.mtimeMs || 0}:${a?.size || 0}|${b?.mtimeMs || 0}:${b?.size || 0}`;
 }
 
 function collectSubagents(rootDir, rootUuid) {

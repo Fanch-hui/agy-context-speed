@@ -1,20 +1,34 @@
 # AGY Context & Speed Monitor
 
-原生 Antigravity 2.x Sidecar 面板，监控最近会话的上下文 Token 与生成速度。**完全保留原厂 App 签名**，只把文件放进 `~/.gemini/config/plugins/`，不接触 `Antigravity.app` 或 `app.asar`。
+原生 Antigravity 2.x Sidecar 面板，监控最近会话的上下文 Token 与生成速度（支持 macOS / Linux / Windows）。**完全保留原厂 App 签名**，只把文件放进 `~/.gemini/config/plugins/`（Windows 为 `%USERPROFILE%\.gemini\config\plugins\`），不接触应用本体。
 
-## 使用方式（macOS）
+## 使用方式
 
-解压 ZIP，打开终端进入解压后的 `agy-context-speed` 文件夹，执行：
+前置条件：系统已安装 **Node.js 20+**（推荐 **22.5+**，用于内置 `node:sqlite` 读取会话标题、流式耗时与费率明细）且 `node` 已加入 `PATH`。
 
-```bash
-bash install.sh
-```
+解压 ZIP 或克隆仓库后，在 `agy-context-speed` 目录执行对应平台的安装脚本：
+
+- **macOS / Linux**：
+  ```bash
+  bash install.sh
+  ```
+- **Windows（PowerShell）**：
+  ```powershell
+  .\install.ps1
+  ```
+- **Windows（命令提示符 CMD）或跨平台直接运行**：
+  ```bat
+  install.cmd
+  ```
+  或 `node scripts/install.mjs`
 
 关闭并重新启动 Google Antigravity 2.x，在对话右上角的 **⋮ → Extensions → Context & Speed** 打开辅助面板。
 
+> Windows 下安装或卸载前请先完全退出 Antigravity，避免插件目录或配置文件被进程占用导致写入失败。
+
 安装脚本使用系统 Node.js，仅安装本插件与开启其 Sidecar 开关。配置文件更新前会保存带时间戳备份。也可以用官方 CLI `agy plugin validate --strict ./agy-context-speed` 验证插件。
 
-卸载：在本插件目录执行 `bash uninstall.sh`。卸载只处理本插件目录及专属 Sidecar 开关。
+卸载：在插件目录执行对应脚本——macOS / Linux 运行 `bash uninstall.sh`，Windows PowerShell 运行 `.\uninstall.ps1`，CMD 运行 `uninstall.cmd`（或 `node scripts/uninstall.mjs`）。卸载只处理本插件目录及专属 Sidecar 开关。
 
 ## 显示指标
 
@@ -28,11 +42,11 @@ bash install.sh
 - **全会话汇总**：跨所有本地会话（含全部子代理）按新版统一双额度池（**Gemini**：Neon / Carbon / Hydrogen / Argon 等全部 Gemini 模型共享；**Claude / GPT**：Claude 与 GPT-OSS 独立池）汇总用量和等价 API 费用（`aggregate.mjs`）。适配 **Google AI Pro** 与 **Google AI Ultra** 的「5 小时短周期 + 7 天周限额」双窗口机制，以及 **Free / Plus** 的「仅 7 天周限额」模式；各池均按「首次调用才开始计时」滚动并支持按已用/距刷新时间校准及额外重置，另提供可自定义每月起算时刻的「本月」汇总，配置由后端持久化并自动迁移旧版设置（`settings.mjs`）。
 - **会话选择**：默认跟随宿主当前打开的会话（宿主未提供会话 ID 或该会话尚无日志时，退回最近修改的会话）；也可在下拉框中按工作区手动选择。标题、工作区来自各数据目录下的 `conversation_summaries.db`（只读，需 Node 22.5+ 内置的 `node:sqlite`；不可用时退回标注文件标题），子代理会话不在下拉列表中显示。
 
-日志路径：`~/.gemini/antigravity/brain/`，兼容 `antigravity2`、`antigravity-ide`、`antigravity-cli`。优先读取轻量 `transcript.jsonl`，找不到时读取 `transcript_full.jsonl`，只扫描单文件尾部最多 8 MiB。长会话的合计统计可能只覆盖最新部分。
+日志路径：`~/.gemini/antigravity/brain/`（Windows 为 `%USERPROFILE%\.gemini\antigravity\brain\`），兼容 `antigravity2`、`antigravity-ide`、`antigravity-cli`。优先读取轻量 `transcript.jsonl`，找不到时读取 `transcript_full.jsonl`，只扫描单文件尾部最多 8 MiB。长会话的合计统计可能只覆盖最新部分。
 
 ## 隐私与兼容
 
-- 仅读取本地会话文件，不发送网络请求，不读取密钥或修改会话；唯一写入的是插件自己的设置文件 `~/.gemini/antigravity/plugin_data/agy-context-speed/settings.json`。
+- 仅读取本地会话文件，不发送网络请求，不读取密钥或修改会话；唯一写入的是插件自己的设置文件 `~/.gemini/antigravity/plugin_data/agy-context-speed/settings.json`（Windows 为 `%USERPROFILE%\.gemini\antigravity\plugin_data\agy-context-speed\settings.json`）。
 - Electron 应用的签名、资源与更新程序保持原样。
 - 适用于支持 Sidecar UI 的 Antigravity App 2.22+；这是 AGY App 原生插件，**不是** VS Code 的 `.vsix` 扩展。
 - 当前构建已通过本地自动化测试。仍需在真实 AGY App 上验证面板注册与各模型的日志字段。

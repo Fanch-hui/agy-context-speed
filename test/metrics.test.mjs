@@ -8,6 +8,8 @@ import { decodeCall } from '../sidecars/monitor/calls.mjs';
 import { activeRates, modelPool, priceCall, resolveModelId, summarizeCosts } from '../sidecars/monitor/pricing.mjs';
 import { resolveMonthWindow, resolvePoolWindow, summarizeAllWindows } from '../sidecars/monitor/aggregate.mjs';
 import { contextLimit, cycleContextLimit, updateWindowSettings, windowSettings } from '../sidecars/monitor/settings.mjs';
+import { workspaceName } from '../sidecars/monitor/summaries.mjs';
+import { queryCached } from '../sidecars/monitor/sqlite.mjs';
 
 const ts = '2026-11-15T10:00:00.000Z';
 function step(timeSec, fields) { return { created_at: new Date(Date.parse(ts) + timeSec*1000).toISOString(), ...fields }; }
@@ -547,4 +549,44 @@ test('includes descendant subagents in session totals, session cost, and unified
     assert.equal(ultraRes.hasFiveHour, true);
     assert.ok(Math.abs(ultraRes.fiveHour.total - 8.5) < 1e-9);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('parses Windows, UNC, WSL, and POSIX workspace URIs uniformly', () => {
+  assert.equal(workspaceName('["file:///C:/Users/Alice/my%20proj"]'), 'my proj');
+  assert.equal(workspaceName('["file:///c%3A/Users/Alice/my-app/"]'), 'my-app');
+  assert.equal(workspaceName('["file:///C:%5CUsers%5CAlice%5Cwin-app"]'), 'win-app');
+  assert.equal(workspaceName('["file:///C:/"]'), 'C:');
+  assert.equal(workspaceName('["file://fileserver/share/repo"]'), 'repo');
+  assert.equal(workspaceName('["C:\\\\Users\\\\Alice\\\\raw-win\\\\"]'), 'raw-win');
+  assert.equal(workspaceName('["vscode-remote://wsl+ubuntu/home/alice/wsl-proj"]'), 'wsl-proj');
+  assert.equal(workspaceName('["file:///C:/work/main", "file:///D:/work/extra"]'), 'main +1');
+  assert.equal(workspaceName('["not-a-path"]'), '');
+  assert.equal(workspaceName(''), '');
+  assert.equal(workspaceName('[]'), '');
+});
+
+test('invalidates SQLite query cache when WAL/DB size changes even with identical mtime', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'agy-sqlite-'));
+  let db;
+  try {
+    const dbPath = join(dir, 'test.db');
+    const fixedTime = new Date(2026, 10, 20, 12, 0, 0, 0);
+    db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA journal_mode = WAL; CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO items VALUES (1, \'alpha\');');
+    utimesSync(dbPath, fixedTime, fixedTime);
+    utimesSync(`${dbPath}-wal`, fixedTime, fixedTime);
+
+    const readRows = () => queryCached(dbPath, 'SELECT id, name FROM items ORDER BY id', rows => rows.map(r => r.name));
+    assert.deepEqual(readRows(), ['alpha']);
+
+    db.exec('INSERT INTO items VALUES (2, \'beta\');');
+    utimesSync(dbPath, fixedTime, fixedTime);
+    utimesSync(`${dbPath}-wal`, fixedTime, fixedTime);
+
+    assert.deepEqual(readRows(), ['alpha', 'beta']);
+  } finally {
+    db?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
