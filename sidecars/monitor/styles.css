@@ -144,6 +144,38 @@ main {
   text-align: center;
 }
 
+.model-bar {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 4px;
+}
+
+.seg-models {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.seg-models::-webkit-scrollbar {
+  display: none;
+}
+
+.seg-models .seg-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.live-dot {
+  display: inline-block;
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cs-green);
+}
+
 /* 顶部双仪表（等宽两列、严格等高对称） */
 .gauges {
   display: grid;
@@ -423,6 +455,29 @@ main {
 .kv-muted {
   color: var(--cs-muted);
   font-weight: 400;
+}
+
+.role-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--cs-muted);
+}
+
+.kv-click {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px 1px 10px;
+  margin: 0 -4px;
+  transition: background 0.12s ease;
+}
+
+.kv-click:hover {
+  background: var(--cs-pill-bg);
+}
+
+.kv-click.kv-selected {
+  background: color-mix(in srgb, var(--cs-blue) 12%, transparent);
 }
 
 /* 全会话汇总 */

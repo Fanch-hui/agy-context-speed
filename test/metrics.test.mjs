@@ -590,3 +590,73 @@ test('invalidates SQLite query cache when WAL/DB size changes even with identica
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('builds per-model and Orchestrator planner/executor telemetry views', () => {
+  assert.equal(resolveModelId({ model: 1525 }), 'gemini-4-hydrogen');
+  assert.equal(resolveModelId({ model: 1532 }), 'gemini-4-neon');
+
+  const steps = [
+    step(0, { source: 'USER_EXPLICIT', type: 'USER_INPUT' }),
+    step(2, {
+      source: 'MODEL', type: 'PLANNER_RESPONSE',
+      input_tokens: 10_000, cache_read_tokens: 30_000, output_tokens: 200,
+      tool_calls: [{ name: 'exit_plan_mode' }],
+    }),
+    step(10, {
+      source: 'MODEL', type: 'PLANNER_RESPONSE',
+      input_tokens: 5_000, cache_read_tokens: 45_000, output_tokens: 600,
+    }),
+    step(15, {
+      source: 'MODEL', type: 'PLANNER_RESPONSE',
+      input_tokens: 2_000, cache_read_tokens: 58_000, output_tokens: 900,
+      tool_calls: [{ name: 'enter_plan_mode' }],
+    }),
+    step(25, {
+      source: 'MODEL', type: 'PLANNER_RESPONSE',
+      input_tokens: 8_000, cache_read_tokens: 62_000, output_tokens: 400,
+    }),
+  ];
+  const calls = [
+    { input: 10_000, cached: 30_000, output: 200, ttft: 6.0, stream: 2.0, maxContextTokens: 512_000, model: 1532, responseModel: 'gemini-4-neon' },
+    { input: 5_000, cached: 45_000, output: 600, ttft: 2.0, stream: 1.5, maxContextTokens: 512_000, model: 1525, responseModel: 'gemini-4-hydrogen' },
+    { input: 2_000, cached: 58_000, output: 900, ttft: 1.0, stream: 1.5, maxContextTokens: 512_000, model: 1525, responseModel: 'gemini-4-hydrogen' },
+    { input: 8_000, cached: 62_000, output: 400, ttft: 8.0, stream: 2.0, maxContextTokens: 512_000, model: 1532, responseModel: 'gemini-4-neon' },
+  ];
+
+  const m = analyzeSteps(steps, { calls });
+  assert.equal(m.performance.tps, 300); // 2100 / 7s
+  assert.deepEqual(m.performance.history.map(h => h.modelId), [
+    'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon',
+  ]);
+  assert.equal(m.models.length, 2);
+
+  const [planner, executor] = m.models;
+  assert.deepEqual([planner.id, planner.role, planner.isActive, planner.calls], ['gemini-4-neon', 'planner', true, 2]);
+  assert.equal(planner.performance.tps, 150); // 600 / 4s
+  assert.equal(planner.performance.ttftMedianSeconds, 7);
+  assert.equal(planner.performance.history.length, 2);
+  assert.deepEqual([planner.context.used, planner.context.ceiling], [70_000, 512_000]);
+  assert.equal(planner.totals.cacheHitRate, 83.6); // 92k / 110k
+
+  assert.deepEqual([executor.id, executor.role, executor.isActive, executor.calls], ['gemini-4-hydrogen', 'executor', false, 2]);
+  assert.equal(executor.performance.tps, 500); // 1500 / 3s
+  assert.equal(executor.performance.ttftMedianSeconds, 1.5);
+  assert.equal(executor.performance.history.length, 2);
+  assert.deepEqual([executor.context.used, executor.context.ceiling], [60_000, 512_000]);
+  assert.equal(executor.totals.cacheHitRate, 93.6); // 103k / 110k
+
+  // Non-orchestrator multi-model conversation preserves first-seen order without forced roles.
+  const plainSteps = [
+    step(0, { source: 'MODEL', input_tokens: 1_000, cache_read_tokens: 0, output_tokens: 100 }),
+    step(5, { source: 'MODEL', input_tokens: 2_000, cache_read_tokens: 0, output_tokens: 200 }),
+  ];
+  const plainCalls = [
+    { input: 1_000, cached: 0, output: 100, ttft: 1, stream: 1, maxContextTokens: 256_000, responseModel: 'claude-sonnet-4-6' },
+    { input: 2_000, cached: 0, output: 200, ttft: 1, stream: 1, maxContextTokens: 512_000, responseModel: 'gemini-4-hydrogen' },
+  ];
+  const plain = analyzeSteps(plainSteps, { calls: plainCalls });
+  assert.deepEqual(plain.models.map(x => [x.id, x.role, x.isActive]), [
+    ['claude-sonnet-4-6', null, false],
+    ['gemini-4-hydrogen', null, true],
+  ]);
+});

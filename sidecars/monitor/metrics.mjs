@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { readSummaries } from './summaries.mjs';
 import { readRecentCalls } from './calls.mjs';
 import { aggregatePriced, priceTurns } from './pricing.mjs';
+import { analyzeSpeed, buildContextSnapshot, buildModelViews, cacheHitRate, getWhen, isUserStep } from './models.mjs';
 
 const ROOT_SUFFIXES = ['antigravity', 'antigravity2', 'antigravity-ide', 'antigravity-cli'];
 const MAX_SESSIONS = 60;
@@ -12,9 +13,6 @@ const READ_TAIL = 8 * 1024 * 1024;
 const MAX_LINES = 8000;
 /** 预设上限档位：没有可靠来源时由用户选择，实际用量超出时按它自动升档。 */
 export const LIMIT_TIERS = [256_000, 512_000, 1_000_000];
-const SPEED_SAMPLE = 20;
-const MIN_ESTIMATE_SECONDS = 2;
-const MAX_ESTIMATE_SECONDS = 600;
 const ALIGN_SLACK = 4;
 
 export function appRoots(home = homedir()) {
@@ -160,11 +158,6 @@ function getStepModel(step) {
   if (!model && !responseModel && !responseModelFull && !modelDisplayName) return null;
   return { model, responseModel, responseModelFull, modelDisplayName };
 }
-function getWhen(step) {
-  const raw = step.created_at ?? step.createdAt ?? step.metadata?.createdAt;
-  const time = raw ? new Date(raw).getTime() : NaN;
-  return Number.isFinite(time) ? time : null;
-}
 function contextCeiling(step) {
   const objects = [step?.metadata?.chatModel?.chatStartMetadata?.contextWindowMetadata,
     step?.chatModel?.chatStartMetadata?.contextWindowMetadata,
@@ -174,33 +167,6 @@ function contextCeiling(step) {
     if (n > 0) return n;
   }
   return null;
-}
-
-const isUserStep = (step) => step.source === 'USER_EXPLICIT' || step.type === 'USER_INPUT';
-const ratio = (part, whole) => whole > 0 ? Math.round((1000 * part) / whole) / 10 : null;
-const round1 = (n) => Math.round(n * 10) / 10;
-/** `input_tokens` excludes cached tokens, so the prompt total is input + cache read. */
-const cacheHitRate = (input, cached) => ratio(cached || 0, (input || 0) + (cached || 0));
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-/**
- * How long one model call took. Logs only carry each step's start time at 1 s resolution, so
- * without a streaming duration the end is taken from whatever follows: the next step of the
- * same turn, or the file's last write for the final step. A following user message says
- * nothing (it includes idle time), and spans under MIN_ESTIMATE_SECONDS are dominated by
- * the timestamp rounding, so both are left unmeasured.
- */
-function callSeconds(steps, turn, endedAt) {
-  if (turn.timing.stream) return turn.timing.stream;
-  const next = steps[turn.index + 1];
-  const end = next ? (isUserStep(next) ? null : getWhen(next)) : endedAt;
-  if (!end || !turn.when) return null;
-  const seconds = (end - turn.when) / 1000;
-  return seconds >= MIN_ESTIMATE_SECONDS && seconds <= MAX_ESTIMATE_SECONDS ? seconds : null;
 }
 
 const sameCall = (turn, call) => (turn.input ?? 0) === (call.input ?? 0)
@@ -247,42 +213,6 @@ function attachCalls(turns, calls) {
     }
     if (!resynced) { t--; c--; }
   }
-}
-
-/**
- * Speed over the recent calls. With measured streaming durations it is total output over
- * total streaming time: a per-call average would be dominated by short replies whose tokens
- * arrive in one burst. With only estimated durations it is the median, which shrugs off
- * tool-approval waits and timestamp rounding.
- */
-function analyzeSpeed(steps, turns, endedAt) {
-  const calls = turns.filter(t => t.output > 0)
-    .map(t => ({ turn: t, seconds: callSeconds(steps, t, endedAt) }));
-  const timed = calls.filter(c => c.seconds);
-  const streamed = timed.filter(c => c.turn.timing.stream).slice(-SPEED_SAMPLE);
-  const sample = streamed.length ? streamed : timed.slice(-SPEED_SAMPLE);
-  const sum = (pick) => sample.reduce((total, c) => total + pick(c), 0);
-  const tps = streamed.length ? sum(c => c.turn.output) / sum(c => c.seconds)
-    : sample.length ? median(sample.map(c => c.turn.output / c.seconds)) : null;
-  const firstTokens = turns.map(t => t.timing.ttft).filter(v => v != null).slice(-SPEED_SAMPLE);
-  const last = calls.at(-1);
-  const history = sample.map(c => ({
-    tps: round1(c.turn.output / c.seconds),
-    outputTokens: c.turn.output,
-    ttftSeconds: c.turn.timing.ttft ?? null,
-    streamSeconds: Math.round(c.seconds * 100) / 100,
-    whenMs: c.turn.when ?? null,
-  }));
-  return {
-    tps: tps === null ? null : round1(tps),
-    mode: streamed.length ? 'streaming' : sample.length ? 'effective' : 'unavailable',
-    sampleCount: sample.length,
-    lastTps: last?.seconds ? round1(last.turn.output / last.seconds) : null,
-    durationSeconds: last?.seconds ?? null,
-    ttftSeconds: last?.turn.timing.ttft ?? null,
-    ttftMedianSeconds: firstTokens.length ? median(firstTokens) : null,
-    history,
-  };
 }
 
 /** 提取日志中的模型调用记录，并把调用库里的耗时、模型信息与上限配对到对应步上。 */
@@ -364,17 +294,15 @@ function readSubagentUsage(rootDir, { uuid, log }, now) {
 
 function analyzeStepsWithPriced(steps, options = {}) {
   const fallbackLimit = numberOrNull(options.defaultContextLimit) || 256_000;
-  const { turns, last, lastIdx, limit, sessionInput, sessionCached, sessionOutput, userTurns, peak } =
+  const { turns, lastIdx, limit, sessionInput, sessionCached, sessionOutput, userTurns } =
     extractTurns(steps, options.calls || []);
   const recorded = turns.length;
   const lastTurn = turns.length ? turns[turns.length - 1] : null;
-  const used = last ? (last.input || 0) + (last.cached || 0) : null;
-  // 只有预设值才会被推翻：用量超过它说明真实上限更高，升到能容纳峰值的最近一档。
-  // 会话自己记录的上限是压缩阈值，压缩前的一次调用可以略微超过它。
-  const raised = !limit && peak > fallbackLimit ? (LIMIT_TIERS.find(tier => tier >= peak) ?? peak) : null;
-  const effectiveLimit = limit || raised || fallbackLimit;
-  const contextPercent = used === null ? null : Math.round((10000 * used) / effectiveLimit) / 100;
   const priced = priceTurns(turns, { fallbackWhen: options.endedAt, now: options.now });
+  for (let i = 0; i < turns.length; i++) {
+    turns[i].modelId = priced[i]?.modelId ?? null;
+    turns[i].modelName = priced[i]?.rates?.name || priced[i]?.unrecognizedLabel || '';
+  }
   const cost = aggregatePriced(priced);
   cost.primaryModels = cost.models;
   cost.primaryCalls = recorded;
@@ -382,12 +310,7 @@ function analyzeStepsWithPriced(steps, options = {}) {
   return {
     priced,
     snapshot: {
-      context: {
-        used, ceiling: effectiveLimit, ceilingSource: limit ? 'session' : raised ? 'observed' : 'configured',
-        percent: contextPercent, input: last?.input ?? null, cache: last?.cached ?? null,
-        cacheHitRate: last ? cacheHitRate(last.input, last.cached) : null,
-        updatedAt: last ? getWhen(last.step) : null,
-      },
+      context: buildContextSnapshot(turns, { limit, fallbackLimit, limitTiers: LIMIT_TIERS }),
       performance: {
         ...analyzeSpeed(steps, turns, options.endedAt),
         lastOutputTokens: lastTurn?.output ?? null,
@@ -403,6 +326,9 @@ function analyzeStepsWithPriced(steps, options = {}) {
         },
       },
       cost,
+      models: buildModelViews(steps, turns, priced, {
+        fallbackLimit, limitTiers: LIMIT_TIERS, sessionLimit: limit, endedAt: options.endedAt,
+      }),
       recent: turns.slice(-12).reverse().map(t => ({
         when: t.when, output: t.output, input: t.input, cache: t.cached,
         tps: t.timing.stream ? Math.round(10 * (t.output || 0) / t.timing.stream) / 10 : null,

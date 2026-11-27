@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 const RING_CIRC = 2 * Math.PI * 31; // 194.7787
 
 let sessionId = '', loading = false, listSignature = '', breakdownSignature = '';
+let selectedModelId = '', activeSessionId = '', lastSnapshot = null, modelBarSignature = '';
 // 宿主通过 URL 把当前打开的会话 ID 交给 preload，自动模式据此跟随。
 const conversationId = window.sidecar?.conversationId || '';
 
@@ -66,7 +67,14 @@ const setHealth = (state, label) => {
 const OTHER_SOURCES = { antigravity2: 'App 2', 'antigravity-ide': 'IDE', 'antigravity-cli': 'CLI' };
 const AUTO_LABELS = { conversation: '当前会话（自动）', recent: '最近活动会话（自动）' };
 const CEILING_TAGS = { configured: '预设', observed: '按用量升档' };
+const ROLE_LABELS = { planner: '规划', executor: '执行' };
 const NO_WORKSPACE = '未关联工作区';
+const shortModelName = (name) => String(name || '')
+  .replace(/^Gemini\s+4\s+(?=[A-Za-z])/i, '')
+  .replace(/^Gemini\s+/i, '')
+  .replace(/^Claude\s+/i, '')
+  .replace(/^GPT-OSS\s+120B$/i, 'GPT-OSS')
+  .trim() || String(name || '');
 const sessionName = (s) => s.title || s.uuidShort;
 const optionLabel = (s) => [sessionName(s), OTHER_SOURCES[s.source], shortWhen(s.modified)].filter(Boolean).join(' · ');
 
@@ -315,6 +323,9 @@ function setupChartHover() {
     const p = nearest.pt;
     const parts = [`${p.tps.toFixed(1)} t/s`, `${fmt(p.outputTokens)} tok`];
     if (p.ttftSeconds != null) parts.push(`首字 ${p.ttftSeconds.toFixed(1)}s`);
+    if (!selectedModelId && p.modelName && (lastSnapshot?.models?.length || 0) > 1) {
+      parts.push(shortModelName(p.modelName));
+    }
     set('chartHover', parts.join(' · '));
   });
 
@@ -325,13 +336,14 @@ function setupChartHover() {
   });
 }
 
-function makeKvRow(labelText, valNodes, { sub = false, title = '' } = {}) {
+function makeKvRow(labelNode, valNodes, { sub = false, title = '', className = '' } = {}) {
   const row = document.createElement('div');
-  row.className = sub ? 'kv kv-sub' : 'kv';
+  row.className = [sub ? 'kv kv-sub' : 'kv', className].filter(Boolean).join(' ');
   if (title) row.title = title;
   const lbl = document.createElement('span');
   lbl.className = 'kv-label';
-  lbl.textContent = labelText;
+  if (typeof labelNode === 'string') lbl.textContent = labelNode;
+  else for (const n of [].concat(labelNode)) lbl.append(n);
   const val = document.createElement('span');
   val.className = 'kv-val';
   for (const node of valNodes) val.append(node);
@@ -339,25 +351,70 @@ function makeKvRow(labelText, valNodes, { sub = false, title = '' } = {}) {
   return row;
 }
 
-function formatCostAndCalls(costText, calls, mutedCost = false) {
+function formatCostAndCalls(costText, calls, mutedCost = false, tps = null) {
+  const nodes = [];
+  if (tps != null) {
+    const tpsSpan = document.createElement('span');
+    tpsSpan.className = 'kv-muted';
+    tpsSpan.textContent = `${tps >= 100 ? Math.round(tps) : tps.toFixed(1)} t/s · `;
+    nodes.push(tpsSpan);
+  }
   const costSpan = document.createElement('span');
   if (mutedCost) costSpan.className = 'kv-muted';
   costSpan.textContent = costText;
   const tail = document.createElement('span');
   tail.className = 'kv-muted';
   tail.textContent = ` · ${calls} 次`;
-  return [costSpan, tail];
+  nodes.push(costSpan, tail);
+  return nodes;
 }
 
-function makeModelBreakdownRow(m, sub = true) {
+function makeModelBreakdownRow(m, sub = true, modelView = null, clickable = false, selected = false) {
+  const perf = modelView?.performance;
+  const ctx = modelView?.context;
+  const hit = modelView?.totals?.cacheHitRate;
+  const roleLabel = modelView?.role ? ROLE_LABELS[modelView.role] : '';
+  const speedParts = [];
+  if (perf?.tps != null) speedParts.push(`速度 ${perf.tps.toFixed(1)} t/s`);
+  if (perf?.ttftMedianSeconds != null) speedParts.push(`首字中位 ${secs(perf.ttftMedianSeconds)}`);
+  if (hit != null) speedParts.push(`缓存命中 ${pct(hit)}`);
   const rateLine = m.rates
     ? `\n费率：入 $${m.rates.input} / 缓 $${m.rates.cached} / 出 $${m.rates.output}（每 1M）`
     : '';
-  const title = `${m.name} · ${m.calls} 次调用\n入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}${rateLine}`;
-  return makeKvRow(m.name, formatCostAndCalls(usd(m.total), m.calls, false), { sub, title });
+  const title = [
+    `${m.name}${roleLabel ? `（${roleLabel}）` : ''} · ${m.calls} 次调用`,
+    speedParts.join(' · '),
+    ctx?.used != null ? `上下文 ${fmt(ctx.used)} / ${fmt(ctx.ceiling)}` : '',
+    `入 ${fmt(m.inputTokens)} · 缓 ${fmt(m.cachedTokens)} · 出 ${fmt(m.outputTokens)}${rateLine}`,
+  ].filter(Boolean).join('\n');
+
+  const lblNodes = [document.createTextNode(m.name)];
+  if (roleLabel) {
+    const tag = document.createElement('span');
+    tag.className = 'role-tag';
+    tag.textContent = roleLabel;
+    lblNodes.push(tag);
+  }
+  const row = makeKvRow(
+    lblNodes,
+    formatCostAndCalls(usd(m.total), m.calls, false, clickable ? perf?.tps : null),
+    {
+      sub,
+      title,
+      className: clickable ? (selected ? 'kv-click kv-selected' : 'kv-click') : '',
+    }
+  );
+  if (clickable) {
+    row.addEventListener('click', () => {
+      selectedModelId = selectedModelId === m.id ? '' : m.id;
+      syncModelTabSelection();
+      if (lastSnapshot) renderActiveView(lastSnapshot);
+    });
+  }
+  return row;
 }
 
-function renderDetailsTail(p, t, k) {
+function renderDetailsTail(p, t, k, modelViews = []) {
   set('detailTtft', p.ttftSeconds != null ? secs(p.ttftSeconds) : (p.ttftMedianSeconds != null ? `中位 ${secs(p.ttftMedianSeconds)}` : '—'));
   $('rowTtft').title = p.ttftMedianSeconds != null ? `近 20 次首字中位：${secs(p.ttftMedianSeconds)}` : '';
 
@@ -367,10 +424,16 @@ function renderDetailsTail(p, t, k) {
   const hasSub = sub.count > 0 || sub.modelCalls > 0;
   const primaryCalls = k.primaryCalls ?? (t.modelCalls - (sub.modelCalls || 0));
   const primaryUnpriced = Math.max(0, primaryCalls - primaryModels.reduce((s, m) => s + m.calls, 0));
+  const multiPrimary = modelViews.length > 1;
+  const modelMap = new Map(modelViews.map(v => [v.id, v]));
 
   const sig = JSON.stringify([
     k.mode, k.total, k.last, t.modelCalls, primaryCalls, primaryUnpriced,
-    primaryModels.map(m => [m.id, m.calls, m.total]),
+    multiPrimary ? selectedModelId : '',
+    primaryModels.map(m => {
+      const mv = modelMap.get(m.id);
+      return [m.id, m.calls, m.total, mv?.role || '', mv?.performance?.tps ?? null];
+    }),
     sub.count, sub.modelCalls, sub.cost, sub.unpricedCalls,
     subModels.map(m => [m.id, m.calls, m.total]),
     k.unrecognizedModels,
@@ -393,7 +456,9 @@ function renderDetailsTail(p, t, k) {
       rows.push(makeKvRow(name, formatCostAndCalls(costStr, t.modelCalls, !m && k.total == null), { title: totalTip }));
     } else {
       rows.push(makeKvRow('本会话', formatCostAndCalls(usd(k.total), t.modelCalls, k.total == null), { title: totalTip }));
-      for (const m of primaryModels) rows.push(makeModelBreakdownRow(m, true));
+      for (const m of primaryModels) {
+        rows.push(makeModelBreakdownRow(m, true, modelMap.get(m.id), multiPrimary, selectedModelId === m.id));
+      }
       if (primaryUnpriced > 0) {
         rows.push(makeKvRow('未计价调用', formatCostAndCalls('—', primaryUnpriced, true), { sub: true }));
       }
@@ -430,23 +495,104 @@ function renderDetailsTail(p, t, k) {
   $('costNote').hidden = !costNote;
 }
 
+function syncModelTabSelection() {
+  for (const btn of $('modelTabs').children) {
+    const active = btn.dataset.model === selectedModelId;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  }
+}
+
+function makeModelTab(id, label, tip, isActiveModel = false) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'seg-tab';
+  btn.role = 'tab';
+  btn.dataset.model = id;
+  btn.title = tip;
+  if (isActiveModel) {
+    const dot = document.createElement('i');
+    dot.className = 'live-dot';
+    btn.append(dot);
+  }
+  btn.append(document.createTextNode(label));
+  btn.addEventListener('click', () => {
+    if (selectedModelId === id) return;
+    selectedModelId = id;
+    syncModelTabSelection();
+    if (lastSnapshot) renderActiveView(lastSnapshot);
+  });
+  return btn;
+}
+
+function renderModelBar(models) {
+  const bar = $('modelBar');
+  if (!models || models.length <= 1) {
+    bar.hidden = true;
+    modelBarSignature = '';
+    return;
+  }
+  bar.hidden = false;
+  const sig = JSON.stringify(models.map(m => [
+    m.id, m.role, m.isActive, m.calls, m.performance?.tps, m.context?.used, m.cost?.total,
+  ]));
+  if (sig !== modelBarSignature) {
+    modelBarSignature = sig;
+    const tabs = [makeModelTab('', '全部', '查看全会话合并指标')];
+    for (const m of models) {
+      const roleLabel = m.role ? ROLE_LABELS[m.role] : '';
+      const label = roleLabel ? `${roleLabel} ${shortModelName(m.name)}` : shortModelName(m.name);
+      const tip = [
+        roleLabel ? `${m.name}（${roleLabel}）` : m.name,
+        m.performance?.tps != null ? `速度：${m.performance.tps.toFixed(1)} tok/s` : '',
+        m.performance?.ttftMedianSeconds != null ? `首字中位：${secs(m.performance.ttftMedianSeconds)}` : '',
+        m.totals?.cacheHitRate != null ? `缓存命中：${pct(m.totals.cacheHitRate)}` : '',
+        m.context?.used != null ? `上下文：${fmt(m.context.used)} / ${fmt(m.context.ceiling)}` : '',
+        `${m.calls} 次调用 · ${usd(m.cost?.total)}`,
+      ].filter(Boolean).join('\n');
+      tabs.push(makeModelTab(m.id, label, tip, m.isActive));
+    }
+    $('modelTabs').replaceChildren(...tabs);
+  }
+  syncModelTabSelection();
+}
+
+function renderActiveView(s) {
+  const view = selectedModelId ? s.models?.find(m => m.id === selectedModelId) : null;
+  const target = view || s;
+  set('freshness', `更新 ${when(target.context.updatedAt || s.context.updatedAt)}`);
+  renderSpeedGauge(target.performance);
+  renderContextRingAndDetails(target.context);
+  renderOutput(target.performance, target.totals);
+  renderCacheHit(target.context, target.totals);
+  renderSpeedChart(target.performance);
+  renderDetailsTail(target.performance, s.totals, s.cost || {}, s.models || []);
+}
+
 function render(json) {
   if (json.status !== 'ok' || !json.snapshot) {
     setHealth('', '暂无数据');
     $('emptyBanner').hidden = false;
     set('emptyBanner', json.message || '请先在 Antigravity 中运行一次会话');
+    $('modelBar').hidden = true;
+    lastSnapshot = null;
     return;
   }
   $('emptyBanner').hidden = true;
   setHealth('ready', '本地连接');
   const s = json.snapshot;
-  set('freshness', `更新 ${when(s.context.updatedAt)}`);
-  renderSpeedGauge(s.performance);
-  renderContextRingAndDetails(s.context);
-  renderOutput(s.performance, s.totals);
-  renderCacheHit(s.context, s.totals);
-  renderSpeedChart(s.performance);
-  renderDetailsTail(s.performance, s.totals, s.cost || {});
+  const sid = s.session?.id || '';
+  if (sid !== activeSessionId) {
+    activeSessionId = sid;
+    selectedModelId = '';
+  }
+  const models = s.models || [];
+  if (models.length <= 1 || (selectedModelId && !models.some(m => m.id === selectedModelId))) {
+    selectedModelId = '';
+  }
+  lastSnapshot = s;
+  renderModelBar(models);
+  renderActiveView(s);
 }
 
 async function saveWindows(patch) {
