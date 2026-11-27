@@ -1,0 +1,9 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "agy-context-speed",
+  "displayName": "Context & Speed Monitor",
+  "version": "0.1.0",
+  "description": "Read-only context token and token-throughput monitor for Antigravity 2.x. Native Sidecar panel; no application patching.",
+  "keywords": ["context", "tokens", "tps", "sidecar", "monitoring"],
+  "suggestedPrompts": ["打开 Context & Speed Monitor，查看最近会话的上下文和 TPS"]
+}

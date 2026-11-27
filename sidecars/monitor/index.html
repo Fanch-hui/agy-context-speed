@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'">
+  <title>Context & Speed</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/preload.js"></script>
+  <script src="/windows-ui.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <span id="health" class="status" role="img" aria-label="连接中" title="连接中"></span>
+    <select id="sessions" aria-label="选择会话"><option value="">最近活动会话</option></select>
+    <button id="refresh" class="top-btn" data-tip="立即刷新" aria-label="立即刷新" type="button">
+      <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M13.5 8a5.5 5.5 0 1 1-1.35-3.6L13.5 5.8"/>
+        <path d="M13.5 2.5v3.3h-3.3"/>
+      </svg>
+    </button>
+  </header>
+
+  <div id="emptyBanner" class="empty-banner" hidden>正在读取本地会话…</div>
+
+  <section class="gauges" aria-label="核心仪表">
+    <div class="gauge-item" id="speedGaugeWrap" title="">
+      <svg class="speed-svg" viewBox="0 0 86 54" aria-hidden="true">
+        <circle cx="7" cy="46" r="3.5" fill="var(--cs-amber)"/>
+        <path d="M 7 46 A 36 36 0 0 1 25 14.82" fill="none" stroke="var(--cs-amber)" stroke-width="7"/>
+        <path d="M 25 14.82 A 36 36 0 0 1 61 14.82" fill="none" stroke="var(--cs-green)" stroke-width="7"/>
+        <path d="M 61 14.82 A 36 36 0 0 1 79 46" fill="none" stroke="var(--cs-blue)" stroke-width="7"/>
+        <circle cx="79" cy="46" r="3.5" fill="var(--cs-blue)"/>
+        <g id="speedNeedle" transform="rotate(-90 43 46)">
+          <line x1="43" y1="46" x2="43" y2="15" stroke="var(--cs-needle)" stroke-width="2.6" stroke-linecap="round"/>
+          <circle cx="43" cy="46" r="3.6" fill="var(--cs-needle)"/>
+        </g>
+      </svg>
+      <div class="gauge-readout"><strong id="tpsVal">—</strong><span id="tpsUnit">t/s</span></div>
+    </div>
+
+    <button class="gauge-item gauge-btn" id="ringBtn" type="button" title="切换预设上限" disabled>
+      <svg class="ring-svg" viewBox="0 0 76 76" aria-hidden="true">
+        <circle cx="38" cy="38" r="31" fill="none" stroke="var(--cs-track)" stroke-width="7"/>
+        <circle id="ringCache" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-blue)" stroke-width="7"
+          stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
+        <circle id="ringInput" cx="38" cy="38" r="31" fill="none" stroke="var(--cs-orange)" stroke-width="7"
+          stroke-dasharray="0 194.78" transform="rotate(-90 38 38)"/>
+      </svg>
+      <span class="ring-center" id="contextPct">—</span>
+    </button>
+  </section>
+
+  <div class="divider"><span>速度历史</span></div>
+  <div class="chart-box" id="chartBox">
+    <div class="chart-meta"><span id="chartCaption">—</span><span id="chartHover"></span></div>
+    <svg id="speedChart" class="chart-svg" viewBox="0 0 264 56" preserveAspectRatio="none" aria-label="生成速度历史">
+      <defs>
+        <linearGradient id="speedFillGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0a84ff" stop-opacity="0.58"/>
+          <stop offset="100%" stop-color="#0a84ff" stop-opacity="0.06"/>
+        </linearGradient>
+      </defs>
+      <path id="chartArea" fill="url(#speedFillGrad)" d=""/>
+      <line id="chartAvgLine" x1="0" y1="0" x2="264" y2="0" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.55" visibility="hidden"/>
+      <path id="chartLine" fill="none" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round" d=""/>
+      <line id="chartCrosshair" x1="0" y1="0" x2="0" y2="56" stroke="var(--cs-muted)" stroke-width="0.8" stroke-dasharray="2 2" visibility="hidden"/>
+      <circle id="chartDot" cx="0" cy="0" r="3" fill="#0a84ff" stroke="var(--cs-bg)" stroke-width="1.5" visibility="hidden"/>
+    </svg>
+  </div>
+  <div class="note" id="speedNote" hidden></div>
+
+  <div class="divider"><span>详细信息</span></div>
+  <section class="details">
+    <div class="kv kv-head">
+      <span class="kv-label">已用</span>
+      <span class="kv-val"><b id="contextUsed">—</b><span class="sep">/</span><button id="contextCap" class="cap" type="button" title="切换预设上限" disabled>—</button><span id="contextSource" class="tag"></span></span>
+    </div>
+    <div class="segbar" id="segbar">
+      <div id="barCache" class="seg-cache"></div>
+      <div id="barInput" class="seg-input"></div>
+    </div>
+    <div class="kv" id="rowCache">
+      <span class="kv-label"><i class="dot dot-blue"></i>缓存读</span>
+      <span class="kv-val" id="detailCache">—</span>
+    </div>
+    <div class="kv" id="rowInput">
+      <span class="kv-label"><i class="dot dot-orange"></i>新输入</span>
+      <span class="kv-val" id="detailInput">—</span>
+    </div>
+    <div class="kv">
+      <span class="kv-label"><i class="dot dot-gray"></i>可用</span>
+      <span class="kv-val" id="detailAvail">—</span>
+    </div>
+    <div class="kv" id="rowOutput">
+      <span class="kv-label">输出</span>
+      <span class="kv-val" id="detailOutput">—</span>
+    </div>
+    <div class="kv" id="rowCacheHit">
+      <span class="kv-label">缓存命中</span>
+      <span class="kv-val" id="detailCacheHit">—</span>
+    </div>
+    <div class="kv" id="rowTtft">
+      <span class="kv-label">首字延迟</span>
+      <span class="kv-val" id="detailTtft">—</span>
+    </div>
+    <div id="sessionBreakdown" class="breakdown"></div>
+    <div class="note" id="costNote" hidden></div>
+  </section>
+
+  <div class="divider"><span>全会话汇总</span></div>
+  <section class="summary" id="globalSection">
+    <div class="sum-bar">
+      <div class="segmented" role="tablist" aria-label="统计周期">
+        <button class="seg-tab" data-win="fiveHour" type="button" role="tab" aria-selected="false">5时</button>
+        <button class="seg-tab active" data-win="week" type="button" role="tab" aria-selected="true">本周</button>
+        <button class="seg-tab" data-win="month" type="button" role="tab" aria-selected="false">本月</button>
+      </div>
+      <div class="sum-right">
+        <span id="winMeta" class="sum-meta"></span>
+        <b id="winTotalCost" class="sum-cost">—</b>
+        <button id="toggleWinSettings" class="settings-btn" type="button" data-tip="订阅与周期校准" aria-label="订阅与周期校准" aria-expanded="false">
+          <svg class="ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.2"/>
+            <path d="M13.1 9.6a1.1 1.1 0 0 0 .22 1.21l.04.04a1.33 1.33 0 1 1-1.88 1.88l-.04-.04a1.1 1.1 0 0 0-1.21-.22 1.1 1.1 0 0 0-.67 1.01v.12a1.33 1.33 0 1 1-2.66 0v-.06a1.1 1.1 0 0 0-.72-1.01 1.1 1.1 0 0 0-1.21.22l-.04.04a1.33 1.33 0 1 1-1.88-1.88l.04-.04a1.1 1.1 0 0 0 .22-1.21 1.1 1.1 0 0 0-1.01-.67h-.12a1.33 1.33 0 1 1 0-2.66h.06a1.1 1.1 0 0 0 1.01-.72 1.1 1.1 0 0 0-.22-1.21l-.04-.04a1.33 1.33 0 1 1 1.88-1.88l.04.04a1.1 1.1 0 0 0 1.21.22h.05a1.1 1.1 0 0 0 .67-1.01v-.12a1.33 1.33 0 1 1 2.66 0v.06a1.1 1.1 0 0 0 .67 1.01 1.1 1.1 0 0 0 1.21-.22l.04-.04a1.33 1.33 0 1 1 1.88 1.88l-.04.04a1.1 1.1 0 0 0-.22 1.21v.05a1.1 1.1 0 0 0 1.01.67h.12a1.33 1.33 0 1 1 0 2.66h-.06a1.1 1.1 0 0 0-1.01.67z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div id="winSettings" class="win-settings" hidden>
+      <div class="win-row">
+        <label for="planMode">订阅</label>
+        <select id="planMode" aria-label="订阅方案">
+          <option value="pro">Pro · 5时/周</option>
+          <option value="ultra">Ultra · 5时/周</option>
+          <option value="free">Free / Plus · 仅周</option>
+        </select>
+      </div>
+      <div class="win-row" id="calScopeRow">
+        <label>窗口</label>
+        <div class="segmented seg-mini" role="tablist" aria-label="校准窗口">
+          <button class="seg-tab" data-cal="fiveHour" type="button" role="tab" aria-selected="false">5时</button>
+          <button class="seg-tab active" data-cal="week" type="button" role="tab" aria-selected="true">本周</button>
+        </div>
+      </div>
+      <div id="poolConfigs" class="pool-configs"></div>
+      <div class="win-row">
+        <label for="monthDay">本月</label>
+        <select id="monthDay" aria-label="每月起始日"></select>
+        <input id="monthTime" type="time" aria-label="每月起始时间">
+      </div>
+    </div>
+
+    <div id="winModels" class="rank-list"></div>
+    <div class="note" id="winNote" hidden></div>
+  </section>
+
+  <footer><span id="freshness"></span><span id="error"></span></footer>
+</main>
+</body>
+</html>
